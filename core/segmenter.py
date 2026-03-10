@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…。！？])(?:[\"'»“”)\]]+)?\s+")
+STRUCTURED_LINE_RE = re.compile(r"^\s*\d+\s*;\s*.*$")
 
 
 @dataclass
@@ -50,7 +51,9 @@ def split_long_text(text: str, max_chars: int) -> list[str]:
 
 def segment_text(text: str, mode: str, max_chars: int) -> list[Segment]:
     normalized = text.replace("\r\n", "\n")
-    if mode == "Satz":
+    if _looks_like_structured_lines(normalized):
+        base_segments = _line_mode(normalized, max_chars)
+    elif mode == "Satz":
         base_segments = _sentence_mode(normalized, max_chars)
     elif mode == "Auto":
         base_segments = _paragraph_mode(normalized, max_chars, allow_sentence_fallback=True)
@@ -58,6 +61,51 @@ def segment_text(text: str, mode: str, max_chars: int) -> list[Segment]:
         base_segments = _paragraph_mode(normalized, max_chars, allow_sentence_fallback=True)
 
     return [Segment(text=segment_text, separator=separator, index=index) for index, (segment_text, separator) in enumerate(base_segments)]
+
+
+def _looks_like_structured_lines(text: str) -> bool:
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) < 3:
+        return False
+
+    structured_count = sum(1 for line in lines if STRUCTURED_LINE_RE.match(line))
+    return structured_count / len(lines) >= 0.8
+
+
+def _line_mode(text: str, max_chars: int) -> list[tuple[str, str]]:
+    parts = re.split(r"(\n)", text)
+    segments: list[tuple[str, str]] = []
+    current_separator = ""
+
+    for index in range(0, len(parts), 2):
+        line = parts[index]
+        separator = parts[index + 1] if index + 1 < len(parts) else ""
+
+        if not line and not separator:
+            continue
+
+        if not line and separator:
+            if segments:
+                last_text, last_separator = segments[-1]
+                segments[-1] = (last_text, last_separator + separator)
+            else:
+                current_separator += separator
+            continue
+
+        if current_separator:
+            line = current_separator + line
+            current_separator = ""
+
+        if len(line) <= max_chars:
+            segments.append((line, separator))
+            continue
+
+        chunks = split_long_text(line, max_chars)
+        for chunk_index, chunk in enumerate(chunks):
+            chunk_separator = separator if chunk_index == len(chunks) - 1 else "\n"
+            segments.append((chunk, chunk_separator))
+
+    return segments
 
 
 def _paragraph_mode(text: str, max_chars: int, allow_sentence_fallback: bool) -> list[tuple[str, str]]:

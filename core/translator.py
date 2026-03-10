@@ -16,6 +16,7 @@ from core.segmenter import Segment, segment_text
 
 
 LOGGER = logging.getLogger(__name__)
+STRUCTURED_PREFIX_RE = re.compile(r"^(\s*\d+\s*;\s*)(.*)$", re.DOTALL)
 
 
 @dataclass
@@ -66,7 +67,12 @@ class Translator:
         translated_segments: list[str] = []
 
         for index, segment in enumerate(segments, start=1):
-            prompt_text = segment.text
+            protected_prefix, prompt_text = split_structured_prefix(segment.text)
+            if not prompt_text.strip():
+                translated_segments.append(protected_prefix + segment.separator)
+                if progress_callback:
+                    progress_callback(index, len(segments), segment.text, protected_prefix)
+                continue
 
             inputs = tokenizer(
                 prompt_text,
@@ -87,10 +93,10 @@ class Translator:
             translated = tokenizer.batch_decode(generated, skip_special_tokens=True)[0].strip()
             translated = clean_translation_output(translated)
             translated = self.glossary_manager.apply(translated)
-            translated_segments.append(translated + segment.separator)
+            translated_segments.append(f"{protected_prefix}{translated}{segment.separator}")
 
             if progress_callback:
-                progress_callback(index, len(segments), segment.text, translated)
+                progress_callback(index, len(segments), segment.text, f"{protected_prefix}{translated}")
 
         if request.use_context_overlap:
             warnings.append(
@@ -134,3 +140,10 @@ def clean_translation_output(text: str) -> str:
         lines.append(stripped)
 
     return "\n".join(lines).strip()
+
+
+def split_structured_prefix(text: str) -> tuple[str, str]:
+    match = STRUCTURED_PREFIX_RE.match(text)
+    if not match:
+        return "", text
+    return match.group(1), match.group(2)
