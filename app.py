@@ -31,7 +31,6 @@ BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_PASTED_TEXT_NAME = "pasted_text.txt"
 POLL_INTERVAL_SECONDS = 0.75
 INPUT_MODES = ("Datei-Upload", "Freitext")
-ACTIVE_JOBS: dict[str, "TranslationJob"] = {}
 
 ensure_runtime_directories(BASE_DIR)
 LOG_PATH = BASE_DIR / "logs" / "app.log"
@@ -111,6 +110,7 @@ def initialize_session_state() -> None:
         "save_pasted_input": False,
         "upload_widget_nonce": 0,
         "current_job_id": None,
+        "translation_jobs": {},
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -124,7 +124,7 @@ def get_current_job() -> TranslationJob | None:
     job_id = st.session_state.get("current_job_id")
     if not job_id:
         return None
-    return ACTIVE_JOBS.get(job_id)
+    return st.session_state.translation_jobs.get(job_id)
 
 
 def get_current_job_snapshot() -> dict | None:
@@ -158,7 +158,7 @@ def start_translation_job(payload: dict) -> None:
     job = TranslationJob(job_id=job_id)
     thread = Thread(target=run_translation_job, args=(job, payload), daemon=True)
     job.thread = thread
-    ACTIVE_JOBS[job_id] = job
+    st.session_state.translation_jobs[job_id] = job
     st.session_state.current_job_id = job_id
     thread.start()
 
