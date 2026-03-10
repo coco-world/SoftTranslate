@@ -449,7 +449,7 @@ def render_status_banner(snapshot: dict | None, transient_message: tuple[str, st
     background, text_color, border_color = styles[level]
     st.markdown(
         f"""
-        <div style="max-width:860px;margin:0 auto 18px auto;padding:12px 18px;border:1px solid {border_color};border-radius:14px;background:{background};color:{text_color};text-align:center;font-size:0.98rem;font-weight:600;">
+        <div style="width:100%;margin:0 0 18px 0;padding:12px 18px;border:1px solid {border_color};border-radius:14px;background:{background};color:{text_color};text-align:center;font-size:0.98rem;font-weight:600;box-sizing:border-box;">
             {message}
         </div>
         """,
@@ -459,12 +459,12 @@ def render_status_banner(snapshot: dict | None, transient_message: tuple[str, st
 
 def render_results(snapshot: dict | None, file_progress, segment_progress, result_area) -> None:
     if snapshot is None:
-        file_progress.progress(0.0)
         segment_progress.progress(0.0)
+        file_progress.progress(0.0)
         return
 
-    file_progress.progress(float(snapshot["file_progress"]))
     segment_progress.progress(float(snapshot["segment_progress"]))
+    file_progress.progress(float(snapshot["file_progress"]))
 
     with result_area:
         for item in snapshot["outputs"]:
@@ -508,13 +508,16 @@ def render_results(snapshot: dict | None, file_progress, segment_progress, resul
                     for warning in item["warnings"]:
                         st.warning(warning)
 
-                st.download_button(
-                    "TXT herunterladen",
-                    data=item["translated"].encode("utf-8"),
-                    file_name=item["translation_name"],
-                    mime="text/plain",
-                    key=f"download-{snapshot['job_id']}-{item['translation_name']}",
-                )
+                download_cols = st.columns([4, 1.2])
+                with download_cols[1]:
+                    st.download_button(
+                        "TXT herunterladen",
+                        data=item["translated"].encode("utf-8"),
+                        file_name=item["translation_name"],
+                        mime="text/plain",
+                        key=f"download-{snapshot['job_id']}-{item['translation_name']}",
+                        use_container_width=True,
+                    )
 
         if snapshot["zip_bytes"]:
             zip_name = f"translations_{snapshot['session_id'] or snapshot['job_id']}.zip"
@@ -607,20 +610,23 @@ def main() -> None:
                     disabled=job_running,
                 )
 
-        source_label = st.selectbox(
-            "Quellsprache",
-            get_language_labels(),
-            index=get_language_labels().index("Russisch"),
-            help="Sprache des hochgeladenen Originaltexts. Sie wird auf den passenden NLLB-Sprachcode gemappt.",
-            disabled=job_running,
-        )
-        target_label = st.selectbox(
-            "Zielsprache",
-            get_language_labels(),
-            index=get_language_labels().index("Deutsch"),
-            help="Sprache, in die der Text lokal uebersetzt wird.",
-            disabled=job_running,
-        )
+        language_cols = st.columns(2)
+        with language_cols[0]:
+            source_label = st.selectbox(
+                "Quellsprache",
+                get_language_labels(),
+                index=get_language_labels().index("Russisch"),
+                help="Sprache des hochgeladenen Originaltexts. Sie wird auf den passenden NLLB-Sprachcode gemappt.",
+                disabled=job_running,
+            )
+        with language_cols[1]:
+            target_label = st.selectbox(
+                "Zielsprache",
+                get_language_labels(),
+                index=get_language_labels().index("Deutsch"),
+                help="Sprache, in die der Text lokal uebersetzt wird.",
+                disabled=job_running,
+            )
         with st.expander("Erweiterte Uebersetzungsoptionen"):
             model_label = st.selectbox(
                 "Modell",
@@ -677,9 +683,7 @@ def main() -> None:
                 help="Bricht eine laufende Uebersetzung nach dem aktuell bearbeiteten Segment ab.",
             )
 
-        st.info(
-            f"Beschleunigung: `{detect_device()}`. Das Modell wird einmal geladen und danach fuer weitere Dateien wiederverwendet."
-        )
+        st.caption(f"Beschleunigung: `{detect_device()}`. Modell bleibt fuer weitere Dateien geladen.")
 
     if stop_clicked:
         request_stop_current_job()
@@ -719,8 +723,10 @@ def main() -> None:
 
     with right_col:
         render_column_heading("Output")
-        file_progress = st.progress(0)
+        st.caption("Aktuelle Uebersetzung")
         segment_progress = st.progress(0)
+        st.caption("Gesamtjob")
+        file_progress = st.progress(0)
         result_area = st.container()
         render_results(job_snapshot, file_progress, segment_progress, result_area)
 
