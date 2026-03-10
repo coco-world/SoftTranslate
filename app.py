@@ -422,25 +422,46 @@ def render_column_heading(label: str) -> None:
     )
 
 
-def render_results(snapshot: dict | None, status_placeholder, file_progress, segment_progress, result_area) -> None:
+def render_status_banner(snapshot: dict | None, transient_message: tuple[str, str] | None = None) -> None:
+    level = "info"
+    message = "Bitte TXT-Dateien hochladen oder Freitext einfuegen, um die Uebersetzung zu starten."
+
+    if snapshot is not None:
+        status = snapshot["status"]
+        message = snapshot["status_message"]
+        if status == "completed":
+            level = "success"
+        elif status in {"cancelled", "running"} and snapshot["cancel_requested"]:
+            level = "warning"
+        elif status == "cancelled":
+            level = "warning"
+        elif status == "error":
+            level = "error"
+    if transient_message is not None:
+        level, message = transient_message
+
+    styles = {
+        "info": ("#e7f0ff", "#1d4ed8", "#dbeafe"),
+        "success": ("#e8f7ea", "#166534", "#bbf7d0"),
+        "warning": ("#fff7df", "#92400e", "#fde68a"),
+        "error": ("#feeceb", "#b91c1c", "#fecaca"),
+    }
+    background, text_color, border_color = styles[level]
+    st.markdown(
+        f"""
+        <div style="max-width:860px;margin:0 auto 18px auto;padding:12px 18px;border:1px solid {border_color};border-radius:14px;background:{background};color:{text_color};text-align:center;font-size:0.98rem;font-weight:600;">
+            {message}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_results(snapshot: dict | None, file_progress, segment_progress, result_area) -> None:
     if snapshot is None:
-        status_placeholder.info("Bereit fuer eine neue Uebersetzung.")
         file_progress.progress(0.0)
         segment_progress.progress(0.0)
         return
-
-    status = snapshot["status"]
-    if status == "running":
-        if snapshot["cancel_requested"]:
-            status_placeholder.warning(snapshot["status_message"])
-        else:
-            status_placeholder.info(snapshot["status_message"])
-    elif status == "completed":
-        status_placeholder.success(snapshot["status_message"])
-    elif status == "cancelled":
-        status_placeholder.warning(snapshot["status_message"])
-    else:
-        status_placeholder.error(snapshot["status_message"])
 
     file_progress.progress(float(snapshot["file_progress"]))
     segment_progress.progress(float(snapshot["segment_progress"]))
@@ -532,8 +553,10 @@ def build_runtime_inputs(input_mode: str, uploaded_files, pasted_text: str, past
 
 def main() -> None:
     render_header()
+    banner_placeholder = st.empty()
     job_snapshot = get_current_job_snapshot()
     job_running = bool(job_snapshot and job_snapshot["status"] == "running")
+    transient_message: tuple[str, str] | None = None
     left_col, right_col = st.columns([1, 1.2], gap="large")
 
     with left_col:
@@ -671,9 +694,9 @@ def main() -> None:
             pasted_text_name=st.session_state.pasted_text_name,
         )
         if not runtime_inputs:
-            st.warning("Bitte eine TXT-Datei hochladen oder Freitext eingeben.")
+            transient_message = ("warning", "Bitte eine TXT-Datei hochladen oder Freitext eingeben.")
         elif source_label == target_label:
-            st.warning("Quell- und Zielsprache muessen verschieden sein.")
+            transient_message = ("warning", "Quell- und Zielsprache muessen verschieden sein.")
         else:
             payload = {
                 "inputs": runtime_inputs,
@@ -691,13 +714,15 @@ def main() -> None:
             job_snapshot = get_current_job_snapshot()
             job_running = bool(job_snapshot and job_snapshot["status"] == "running")
 
+    with banner_placeholder.container():
+        render_status_banner(job_snapshot, transient_message=transient_message)
+
     with right_col:
         render_column_heading("Output")
-        status_placeholder = st.empty()
         file_progress = st.progress(0)
         segment_progress = st.progress(0)
         result_area = st.container()
-        render_results(job_snapshot, status_placeholder, file_progress, segment_progress, result_area)
+        render_results(job_snapshot, file_progress, segment_progress, result_area)
 
     render_footer()
 
