@@ -3,7 +3,7 @@ import unittest
 from core.io_utils import build_output_filename
 from core.reassembler import reassemble_segments
 from core.segmenter import segment_text
-from core.translator import split_structured_prefix
+from core.translator import TranslationCancelledError, TranslationRequest, Translator, split_structured_prefix
 
 
 class SmokeTests(unittest.TestCase):
@@ -57,6 +57,24 @@ class SmokeTests(unittest.TestCase):
             "19194; Sergei kam an\n"
             "19195; brachte das Geld\n",
         )
+
+    def test_translate_document_can_cancel_before_model_load(self) -> None:
+        request = TranslationRequest(
+            text="19193;не хватает только плз 28259\n19194;сергей приезжал\n19195;деньги привёз\n",
+            source_language_code="rus_Cyrl",
+            target_language_code="deu_Latn",
+            model_name="unused",
+            quality_mode="Ausgewogen",
+            segmentation_mode="Auto",
+            max_segment_length=120,
+            use_context_overlap=False,
+        )
+
+        with self.assertRaises(TranslationCancelledError) as context:
+            Translator().translate_document(request, should_cancel=lambda: True)
+
+        self.assertEqual(context.exception.translated_segment_count, 0)
+        self.assertEqual(context.exception.partial_text, "")
 
 
 if __name__ == "__main__":

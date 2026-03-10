@@ -6,6 +6,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from typing import Callable
 
 import torch
 
@@ -40,13 +41,27 @@ class TranslationResult:
     warnings: list[str]
 
 
+class TranslationCancelledError(RuntimeError):
+    def __init__(self, partial_text: str, translated_segment_count: int, processing_seconds: float, warnings: list[str] | None = None) -> None:
+        super().__init__("Translation cancelled by user")
+        self.partial_text = partial_text
+        self.translated_segment_count = translated_segment_count
+        self.processing_seconds = processing_seconds
+        self.warnings = warnings or []
+
+
 class Translator:
     """Stateful translator that reuses loaded model weights."""
 
     def __init__(self, glossary_manager: GlossaryManager | None = None) -> None:
         self.glossary_manager = glossary_manager or GlossaryManager()
 
-    def translate_document(self, request: TranslationRequest, progress_callback=None) -> TranslationResult:
+    def translate_document(
+        self,
+        request: TranslationRequest,
+        progress_callback=None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> TranslationResult:
         started_at = time.perf_counter()
         warnings: list[str] = []
         segments = segment_text(
@@ -56,6 +71,8 @@ class Translator:
         )
         if not segments:
             raise ValueError("Dokument enthaelt keine uebersetzbaren Segmente")
+        if should_cancel and should_cancel():
+            raise build_cancellation_error([], started_at, warnings)
 
         loaded = load_model(request.model_name)
         quality = get_quality_preset(request.quality_mode)
@@ -67,6 +84,9 @@ class Translator:
         translated_segments: list[str] = []
 
         for index, segment in enumerate(segments, start=1):
+            if should_cancel and should_cancel():
+                raise build_cancellation_error(translated_segments, started_at, warnings)
+
             protected_prefix, prompt_text = split_structured_prefix(segment.text)
             if not prompt_text.strip():
                 translated_segments.append(protected_prefix + segment.separator)
@@ -97,6 +117,8 @@ class Translator:
 
             if progress_callback:
                 progress_callback(index, len(segments), segment.text, f"{protected_prefix}{translated}")
+            if should_cancel and should_cancel():
+                raise build_cancellation_error(translated_segments, started_at, warnings)
 
         if request.use_context_overlap:
             warnings.append(
@@ -147,3 +169,17 @@ def split_structured_prefix(text: str) -> tuple[str, str]:
     if not match:
         return "", text
     return match.group(1), match.group(2)
+
+
+def build_cancellation_error(
+    translated_segments: list[str],
+    started_at: float,
+    warnings: list[str],
+) -> TranslationCancelledError:
+    partial_text = reassemble_segments(translated_segments) if translated_segments else ""
+    return TranslationCancelledError(
+        partial_text=partial_text,
+        translated_segment_count=len(translated_segments),
+        processing_seconds=time.perf_counter() - started_at,
+        warnings=list(warnings),
+    )
