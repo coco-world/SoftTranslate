@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
@@ -30,10 +31,187 @@ from core.translator import TranslationCancelledError, TranslationRequest, Trans
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_PASTED_TEXT_NAME = "pasted_text.txt"
 POLL_INTERVAL_SECONDS = 0.75
-INPUT_MODES = ("Datei-Upload", "Freitext")
+INPUT_MODES = ("upload", "text")
+SEGMENTATION_MODES = ("Auto", "Absatz", "Satz")
 
 ensure_runtime_directories(BASE_DIR)
 LOG_PATH = BASE_DIR / "logs" / "app.log"
+
+
+TRANSLATIONS = {
+    "de": {
+        "lang_toggle": "EN",
+        "powered_locally_by": "Powered locally by",
+        "banner_idle": "Bitte TXT-Dateien hochladen oder Freitext einfuegen, um die Uebersetzung zu starten.",
+        "input": "Input",
+        "output": "Output",
+        "input_mode": "Eingabemodus",
+        "mode_upload": "Datei-Upload",
+        "mode_text": "Freitext",
+        "upload_label": "TXT-Dateien hochladen",
+        "upload_help": "Mehrere strukturierte TXT-Dateien koennen gemeinsam verarbeitet werden.",
+        "text_label": "Text zum Uebersetzen",
+        "text_help": "Fuer schnelle Einzeltexte kann der Inhalt direkt hier eingefuegt werden, statt eine TXT-Datei hochzuladen.",
+        "save_txt": "TXT",
+        "save_txt_help": "Wenn aktiviert, wird der eingefuegte Originaltext zusaetzlich als TXT im Session-Outputordner gespeichert.",
+        "save_as_label": "Speichern als TXT in Output im Projektordner?",
+        "save_as_help": "Dateiname fuer den eingefuegten Text, falls er zusammen mit den Uebersetzungen im Output-Ordner abgelegt werden soll.",
+        "source_language": "Quellsprache",
+        "source_help": "Sprache des Originaltexts. Sie wird auf den passenden NLLB-Sprachcode gemappt.",
+        "target_language": "Zielsprache",
+        "target_help": "Sprache, in die der Text lokal uebersetzt wird.",
+        "advanced_options": "Erweiterte Uebersetzungsoptionen",
+        "model": "Modell",
+        "model_help": "Standard ist das lokal empfohlene 1.3B-NLLB-Modell. Die 3.3B-Option ist fuer spaetere Erweiterung vorbereitet.",
+        "segmentation_mode": "Segmentierungsmodus",
+        "segmentation_help": "Auto arbeitet primaer absatzweise und faellt bei langen Bloecken auf Satzsegmente zurueck. Satz ist feiner, Absatz erhaelt mehr Struktur.",
+        "segmentation_auto": "Auto",
+        "segmentation_paragraph": "Absatz",
+        "segmentation_sentence": "Satz",
+        "max_segment_length": "Maximale Segmentlaenge",
+        "max_segment_help": "420 Zeichen ist ein sinnvoller Startwert fuer NLLB 1.3B. Wenn Artefakte auftreten, eher kleiner waehlen; wenn zu hart getrennt wird, etwas groesser.",
+        "context_toggle": "Vorheriges Segment als Kontext verwenden",
+        "context_help": "Gedacht fuer bessere begriffliche Konsistenz zwischen Segmenten. In der stabilen Umsetzung bleibt die Prompt-Vermischung bewusst sehr defensiv.",
+        "glossary": "Optionales Glossar (CSV oder JSON)",
+        "glossary_help": "Damit laesst sich feste Terminologie vorgeben, etwa Firmennamen, Rechtsformen oder Fachbegriffe.",
+        "start": "Uebersetzung starten",
+        "start_help": "Startet die Batch-Uebersetzung fuer den aktiven Eingabemodus.",
+        "stop": "Stop",
+        "stop_help": "Bricht eine laufende Uebersetzung nach dem aktuell bearbeiteten Segment ab.",
+        "device_caption": "Beschleunigung: `{device}`. Modell bleibt fuer weitere Dateien geladen.",
+        "current_translation": "Aktuelle Uebersetzung",
+        "overall_job": "Gesamtjob",
+        "chars": "Zeichen",
+        "segments": "Segmente",
+        "runtime": "Laufzeit",
+        "original": "Original",
+        "translation": "Uebersetzung",
+        "partial_result": "Teilresultat",
+        "partial_file_caption": "Diese Datei wurde nicht vollstaendig verarbeitet.",
+        "download_txt": "TXT herunterladen",
+        "download_zip": "Alle Ergebnisse als ZIP herunterladen",
+        "warn_missing_input": "Bitte eine TXT-Datei hochladen oder Freitext eingeben.",
+        "warn_same_language": "Quell- und Zielsprache muessen verschieden sein.",
+        "status_init": "Initialisiere Uebersetzung...",
+        "status_cancel_requested": "Abbruch angefordert. Das aktuelle Segment wird noch sauber abgeschlossen.",
+        "status_processing_file": "Verarbeite Datei {current}/{total}: {name}",
+        "status_cancelled": "Uebersetzung vom Nutzer abgebrochen.",
+        "status_completed": "Session {session_id} abgeschlossen. Ausgabeordner: {output_dir}",
+        "status_glossary_error": "Glossar konnte nicht geladen werden: {error}",
+        "status_unexpected_error": "Unerwarteter Fehler: {error}",
+        "warning_encoding_fallback": "Datei wurde mit Fallback-Encoding gelesen: {encoding}",
+        "warning_partial_result": "Vom Nutzer abgebrochen. Teilresultat bis zum letzten abgeschlossenen Segment.",
+        "warning_context_fallback": "Kontextmodus laeuft derzeit im stabilen Fallback ohne Prompt-Vermischung, um Dopplungen und Artefakte zu vermeiden.",
+        "error_prefix": "{name}: {error}",
+        "zip_name": "translations_{session_id}.zip",
+        "zip_name_partial": "translations_partial_{session_id}.zip",
+        "language_de": "Deutsch",
+        "language_en": "Englisch",
+        "language_fr": "Franzoesisch",
+        "language_pl": "Polnisch",
+        "language_ru": "Russisch",
+        "language_es": "Spanisch",
+        "language_uk": "Ukrainisch",
+    },
+    "en": {
+        "lang_toggle": "DE",
+        "powered_locally_by": "Powered locally by",
+        "banner_idle": "Upload TXT files or paste free text to start the translation.",
+        "input": "Input",
+        "output": "Output",
+        "input_mode": "Input mode",
+        "mode_upload": "File upload",
+        "mode_text": "Free text",
+        "upload_label": "Upload TXT files",
+        "upload_help": "Process multiple structured TXT files together.",
+        "text_label": "Text to translate",
+        "text_help": "For quick single texts, paste content here instead of uploading a TXT file.",
+        "save_txt": "TXT",
+        "save_txt_help": "If enabled, the pasted source text is also saved as a TXT file in the session output folder.",
+        "save_as_label": "Save as TXT in the project output folder?",
+        "save_as_help": "File name for the pasted text if it should be stored together with the translations.",
+        "source_language": "Source language",
+        "source_help": "Language of the source text. It is mapped to the matching NLLB language code.",
+        "target_language": "Target language",
+        "target_help": "Language the text should be translated into locally.",
+        "advanced_options": "Advanced translation options",
+        "model": "Model",
+        "model_help": "The recommended local default is the 1.3B NLLB model. The 3.3B option is prepared for later extension.",
+        "segmentation_mode": "Segmentation mode",
+        "segmentation_help": "Auto mainly works paragraph-wise and falls back to sentence segmentation for long blocks. Sentence is finer-grained, paragraph keeps more structure.",
+        "segmentation_auto": "Auto",
+        "segmentation_paragraph": "Paragraph",
+        "segmentation_sentence": "Sentence",
+        "max_segment_length": "Maximum segment length",
+        "max_segment_help": "420 characters is a solid starting point for NLLB 1.3B. If artifacts appear, choose smaller values; if splits are too aggressive, choose a larger one.",
+        "context_toggle": "Use previous segment as context",
+        "context_help": "Intended for better terminology consistency between segments. In the stable implementation, prompt mixing remains intentionally conservative.",
+        "glossary": "Optional glossary (CSV or JSON)",
+        "glossary_help": "Use this to enforce fixed terminology such as company names, legal forms, or domain-specific terms.",
+        "start": "Start translation",
+        "start_help": "Starts batch translation for the active input mode.",
+        "stop": "Stop",
+        "stop_help": "Stops a running translation after the currently processed segment.",
+        "device_caption": "Acceleration: `{device}`. The model stays loaded for additional files.",
+        "current_translation": "Current translation",
+        "overall_job": "Overall job",
+        "chars": "Characters",
+        "segments": "Segments",
+        "runtime": "Runtime",
+        "original": "Original",
+        "translation": "Translation",
+        "partial_result": "Partial result",
+        "partial_file_caption": "This file was not processed completely.",
+        "download_txt": "Download TXT",
+        "download_zip": "Download all results as ZIP",
+        "warn_missing_input": "Please upload a TXT file or enter free text.",
+        "warn_same_language": "Source and target language must be different.",
+        "status_init": "Initializing translation...",
+        "status_cancel_requested": "Cancellation requested. The current segment will finish cleanly first.",
+        "status_processing_file": "Processing file {current}/{total}: {name}",
+        "status_cancelled": "Translation cancelled by user.",
+        "status_completed": "Session {session_id} completed. Output folder: {output_dir}",
+        "status_glossary_error": "Glossary could not be loaded: {error}",
+        "status_unexpected_error": "Unexpected error: {error}",
+        "warning_encoding_fallback": "File was read with fallback encoding: {encoding}",
+        "warning_partial_result": "Cancelled by user. Partial result up to the last completed segment.",
+        "warning_context_fallback": "Context mode currently runs in a stable fallback without prompt mixing to avoid duplicates and artifacts.",
+        "error_prefix": "{name}: {error}",
+        "zip_name": "translations_{session_id}.zip",
+        "zip_name_partial": "translations_partial_{session_id}.zip",
+        "language_de": "German",
+        "language_en": "English",
+        "language_fr": "French",
+        "language_pl": "Polish",
+        "language_ru": "Russian",
+        "language_es": "Spanish",
+        "language_uk": "Ukrainian",
+    },
+}
+
+LANGUAGE_NAME_KEYS = {
+    "Deutsch": "language_de",
+    "Englisch": "language_en",
+    "Franzoesisch": "language_fr",
+    "Polnisch": "language_pl",
+    "Russisch": "language_ru",
+    "Spanisch": "language_es",
+    "Ukrainisch": "language_uk",
+}
+
+RUNTIME_MESSAGE_PATTERNS = [
+    (re.compile(r"^Datei wurde mit Fallback-Encoding gelesen: (.+)$"), "warning_encoding_fallback", "encoding"),
+    (
+        re.compile(r"^Kontextmodus laeuft derzeit im stabilen Fallback ohne Prompt-Vermischung, um Dopplungen und Artefakte zu vermeiden\.$"),
+        "warning_context_fallback",
+        None,
+    ),
+    (
+        re.compile(r"^Vom Nutzer abgebrochen\. Teilresultat bis zum letzten abgeschlossenen Segment\.$"),
+        "warning_partial_result",
+        None,
+    ),
+]
 
 
 @dataclass
@@ -43,7 +221,8 @@ class TranslationJob:
     lock: Lock = field(default_factory=Lock)
     thread: Thread | None = None
     status: str = "running"
-    status_message: str = "Initialisiere Uebersetzung..."
+    status_key: str = "status_init"
+    status_params: dict = field(default_factory=dict)
     session_id: str = ""
     output_dir: str = ""
     outputs: list[dict] = field(default_factory=list)
@@ -54,14 +233,16 @@ class TranslationJob:
     current_file_index: int = 0
     total_files: int = 0
     cancel_requested: bool = False
-    error_message: str = ""
+    error_key: str | None = None
+    error_params: dict = field(default_factory=dict)
 
     def snapshot(self) -> dict:
         with self.lock:
             return {
                 "job_id": self.job_id,
                 "status": self.status,
-                "status_message": self.status_message,
+                "status_key": self.status_key,
+                "status_params": dict(self.status_params),
                 "session_id": self.session_id,
                 "output_dir": self.output_dir,
                 "outputs": [dict(item) for item in self.outputs],
@@ -72,7 +253,8 @@ class TranslationJob:
                 "current_file_index": self.current_file_index,
                 "total_files": self.total_files,
                 "cancel_requested": self.cancel_requested,
-                "error_message": self.error_message,
+                "error_key": self.error_key,
+                "error_params": dict(self.error_params),
             }
 
 
@@ -104,7 +286,8 @@ st.set_page_config(
 
 def initialize_session_state() -> None:
     defaults = {
-        "input_mode": "Datei-Upload",
+        "ui_language": "de",
+        "input_mode": "upload",
         "pasted_text": "",
         "pasted_text_name": DEFAULT_PASTED_TEXT_NAME,
         "save_pasted_input": False,
@@ -118,6 +301,28 @@ def initialize_session_state() -> None:
 
 
 initialize_session_state()
+
+
+def current_ui_language() -> str:
+    return st.session_state.ui_language
+
+
+def tr(key: str, **kwargs) -> str:
+    return TRANSLATIONS[current_ui_language()][key].format(**kwargs)
+
+
+def localize_language_label(label: str) -> str:
+    return tr(LANGUAGE_NAME_KEYS.get(label, label))
+
+
+def localize_runtime_message(message: str) -> str:
+    for pattern, key, group_name in RUNTIME_MESSAGE_PATTERNS:
+        match = pattern.match(message)
+        if match:
+            if group_name is None:
+                return tr(key)
+            return tr(key, **{group_name: match.group(1)})
+    return message
 
 
 def get_current_job() -> TranslationJob | None:
@@ -134,17 +339,16 @@ def get_current_job_snapshot() -> dict | None:
     return job.snapshot()
 
 
-def is_translation_running() -> bool:
-    snapshot = get_current_job_snapshot()
-    return bool(snapshot and snapshot["status"] == "running")
-
-
 def clear_job_view() -> None:
     st.session_state.current_job_id = None
 
 
+def toggle_ui_language() -> None:
+    st.session_state.ui_language = "en" if current_ui_language() == "de" else "de"
+
+
 def handle_input_mode_change() -> None:
-    if st.session_state.input_mode == "Datei-Upload":
+    if st.session_state.input_mode == "upload":
         st.session_state.pasted_text = ""
         st.session_state.pasted_text_name = DEFAULT_PASTED_TEXT_NAME
         st.session_state.save_pasted_input = False
@@ -171,7 +375,8 @@ def request_stop_current_job() -> None:
         if job.status != "running":
             return
         job.cancel_requested = True
-        job.status_message = "Abbruch angefordert. Das aktuelle Segment wird noch sauber abgeschlossen."
+        job.status_key = "status_cancel_requested"
+        job.status_params = {}
     job.stop_event.set()
 
 
@@ -195,7 +400,8 @@ def run_translation_job(job: TranslationJob, payload: dict) -> None:
         session_id=session_id,
         output_dir=str(output_dir),
         total_files=len(payload["inputs"]),
-        status_message="Initialisiere Uebersetzung...",
+        status_key="status_init",
+        status_params={},
     )
 
     try:
@@ -220,7 +426,8 @@ def run_translation_job(job: TranslationJob, payload: dict) -> None:
                 current_file_index=file_index,
                 file_progress=(file_index - 1) / len(payload["inputs"]),
                 segment_progress=0.0,
-                status_message=f"Verarbeite Datei {file_index}/{len(payload['inputs'])}: {input_name}",
+                status_key="status_processing_file",
+                status_params={"current": file_index, "total": len(payload["inputs"]), "name": input_name},
             )
 
             try:
@@ -266,7 +473,6 @@ def run_translation_job(job: TranslationJob, payload: dict) -> None:
                 output_files.extend(written_files)
                 append_job_output(job, output_item)
             except TranslationCancelledError as exc:
-                output_item = None
                 if exc.partial_text:
                     partial_warnings = list(exc.warnings)
                     partial_warnings.append("Vom Nutzer abgebrochen. Teilresultat bis zum letzten abgeschlossenen Segment.")
@@ -289,37 +495,41 @@ def run_translation_job(job: TranslationJob, payload: dict) -> None:
                 break
             except (FileReadError, ValueError, RuntimeError) as exc:
                 logging.exception("Fehler bei Datei %s", input_name)
-                append_job_output(
-                    job,
-                    {
-                        "name": input_name,
-                        "error": str(exc),
-                    },
-                )
+                append_job_output(job, {"name": input_name, "error": str(exc)})
             finally:
                 update_job(job, segment_progress=0.0)
 
         zip_bytes = create_zip_archive(output_files) if output_files else None
         if job.stop_event.is_set():
-            update_job(
-                job,
-                status="cancelled",
-                status_message="Uebersetzung vom Nutzer abgebrochen.",
-                zip_bytes=zip_bytes,
-            )
+            update_job(job, status="cancelled", status_key="status_cancelled", status_params={}, zip_bytes=zip_bytes)
         else:
             update_job(
                 job,
                 status="completed",
-                status_message=f"Session {session_id} abgeschlossen. Ausgabeordner: {output_dir}",
+                status_key="status_completed",
+                status_params={"session_id": session_id, "output_dir": str(output_dir)},
                 file_progress=1.0,
                 zip_bytes=zip_bytes,
             )
     except GlossaryError as exc:
-        update_job(job, status="error", error_message=str(exc), status_message=f"Glossar konnte nicht geladen werden: {exc}")
-    except Exception as exc:  # pragma: no cover - defensive UI guard
+        update_job(
+            job,
+            status="error",
+            status_key="status_glossary_error",
+            status_params={"error": str(exc)},
+            error_key="status_glossary_error",
+            error_params={"error": str(exc)},
+        )
+    except Exception as exc:  # pragma: no cover
         logging.exception("Unerwarteter Fehler in der Uebersetzungssession")
-        update_job(job, status="error", error_message=str(exc), status_message=f"Unerwarteter Fehler: {exc}")
+        update_job(
+            job,
+            status="error",
+            status_key="status_unexpected_error",
+            status_params={"error": str(exc)},
+            error_key="status_unexpected_error",
+            error_params={"error": str(exc)},
+        )
 
 
 def build_output_item(
@@ -369,6 +579,10 @@ def build_output_item(
 
 
 def render_header() -> None:
+    toggle_cols = st.columns([1, 8])
+    with toggle_cols[0]:
+        st.button(tr("lang_toggle"), on_click=toggle_ui_language, use_container_width=True)
+
     logo_path = BASE_DIR / "assets" / "logo.png"
     if logo_path.exists():
         encoded_logo = base64.b64encode(logo_path.read_bytes()).decode("ascii")
@@ -377,7 +591,7 @@ def render_header() -> None:
             <div style="width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;margin:0 0 8px 0;">
                 <img src="data:image/png;base64,{encoded_logo}" alt="SoftTranslate logo" style="width:260px;max-width:42vw;height:auto;display:block;margin:0 auto;" />
                 <div style="font-size:11px;color:#6a7280;margin-top:2px;text-align:center;">
-                    Powered locally by <strong>SoftTrade Innovations</strong>
+                    {tr("powered_locally_by")} <strong>SoftTrade Innovations</strong>
                 </div>
             </div>
             """,
@@ -385,14 +599,14 @@ def render_header() -> None:
         )
     else:
         st.markdown(
-            """
+            f"""
             <div style="width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;margin:0 0 8px 0;">
                 <div style="display:inline-block;border:1px solid #d9dce1;border-radius:16px;padding:18px 28px;text-align:center;background:#f7f8fa;">
                     <div style="font-size:56px;">TXT</div>
                     <div style="font-size:12px;color:#5c6470;">Logo</div>
                 </div>
                 <div style="font-size:11px;color:#6a7280;margin-top:2px;text-align:center;">
-                    Powered locally by <strong>SoftTrade Innovations</strong>
+                    {tr("powered_locally_by")} <strong>SoftTrade Innovations</strong>
                 </div>
             </div>
             """,
@@ -414,7 +628,7 @@ def render_footer() -> None:
 def render_column_heading(label: str) -> None:
     st.markdown(
         f"""
-        <div style="text-align:center;font-size:1.55rem;font-weight:700;margin-bottom:0.85rem;">
+        <div style="text-align:center;font-size:1.55rem;font-weight:700;margin-bottom:0.85rem;color:var(--text-color);">
             {label}
         </div>
         """,
@@ -422,13 +636,34 @@ def render_column_heading(label: str) -> None:
     )
 
 
-def render_status_banner(snapshot: dict | None, transient_message: tuple[str, str] | None = None) -> None:
+def inject_layout_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        .st-key-input_panel,
+        .st-key-output_panel {
+            border: 1px solid var(--text-color);
+            border-radius: 14px;
+            padding: 18px 18px 14px 18px;
+            box-sizing: border-box;
+            height: 100%;
+            width: 100%;
+            background: transparent;
+            color: var(--text-color);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_status_banner(snapshot: dict | None, transient_message: tuple[str, dict] | None = None) -> None:
     level = "info"
-    message = "Bitte TXT-Dateien hochladen oder Freitext einfuegen, um die Uebersetzung zu starten."
+    message = tr("banner_idle")
 
     if snapshot is not None:
         status = snapshot["status"]
-        message = snapshot["status_message"]
+        message = tr(snapshot["status_key"], **snapshot["status_params"])
         if status == "completed":
             level = "success"
         elif status in {"cancelled", "running"} and snapshot["cancel_requested"]:
@@ -438,7 +673,8 @@ def render_status_banner(snapshot: dict | None, transient_message: tuple[str, st
         elif status == "error":
             level = "error"
     if transient_message is not None:
-        level, message = transient_message
+        level, payload = transient_message
+        message = tr(payload["key"], **payload.get("params", {}))
 
     styles = {
         "info": ("#e7f0ff", "#1d4ed8", "#dbeafe"),
@@ -469,24 +705,24 @@ def render_results(snapshot: dict | None, file_progress, segment_progress, resul
     with result_area:
         for item in snapshot["outputs"]:
             if item.get("error"):
-                st.error(f"{item['name']}: {item['error']}")
+                st.error(tr("error_prefix", name=item["name"], error=localize_runtime_message(item["error"])))
                 continue
 
             title = f"{item['name']} -> {item['translation_name']}"
             if item.get("partial"):
-                title += " (Teilresultat)"
+                title += f" ({tr('partial_result')})"
             with st.expander(title, expanded=True):
                 stat_cols = st.columns(3)
-                stat_cols[0].metric("Zeichen", item["char_count_input"])
-                stat_cols[1].metric("Segmente", item["segments"])
-                stat_cols[2].metric("Laufzeit", f"{item['processing_seconds']:.2f}s")
+                stat_cols[0].metric(tr("chars"), item["char_count_input"])
+                stat_cols[1].metric(tr("segments"), item["segments"])
+                stat_cols[2].metric(tr("runtime"), f"{item['processing_seconds']:.2f}s")
 
                 if item.get("partial"):
-                    st.caption("Diese Datei wurde nicht vollstaendig verarbeitet.")
+                    st.caption(tr("partial_file_caption"))
 
                 preview_cols = st.columns(2)
                 with preview_cols[0]:
-                    st.markdown("**Original**")
+                    st.markdown(f"**{tr('original')}**")
                     st.text_area(
                         f"original-{item['name']}",
                         item["original"],
@@ -495,7 +731,7 @@ def render_results(snapshot: dict | None, file_progress, segment_progress, resul
                         label_visibility="collapsed",
                     )
                 with preview_cols[1]:
-                    st.markdown("**Uebersetzung**")
+                    st.markdown(f"**{tr('translation')}**")
                     st.text_area(
                         f"translation-{item['name']}",
                         item["translated"],
@@ -504,14 +740,13 @@ def render_results(snapshot: dict | None, file_progress, segment_progress, resul
                         label_visibility="collapsed",
                     )
 
-                if item["warnings"]:
-                    for warning in item["warnings"]:
-                        st.warning(warning)
+                for warning in item["warnings"]:
+                    st.warning(localize_runtime_message(warning))
 
                 download_cols = st.columns([4, 1.2])
                 with download_cols[1]:
                     st.download_button(
-                        "TXT herunterladen",
+                        tr("download_txt"),
                         data=item["translated"].encode("utf-8"),
                         file_name=item["translation_name"],
                         mime="text/plain",
@@ -520,170 +755,167 @@ def render_results(snapshot: dict | None, file_progress, segment_progress, resul
                     )
 
         if snapshot["zip_bytes"]:
-            zip_name = f"translations_{snapshot['session_id'] or snapshot['job_id']}.zip"
-            if snapshot["status"] == "cancelled":
-                zip_name = f"translations_partial_{snapshot['session_id'] or snapshot['job_id']}.zip"
+            name_key = "zip_name_partial" if snapshot["status"] == "cancelled" else "zip_name"
             st.download_button(
-                "Alle Ergebnisse als ZIP herunterladen",
+                tr("download_zip"),
                 data=snapshot["zip_bytes"],
-                file_name=zip_name,
+                file_name=tr(name_key, session_id=snapshot["session_id"] or snapshot["job_id"]),
                 mime="application/zip",
                 use_container_width=True,
             )
 
 
 def build_runtime_inputs(input_mode: str, uploaded_files, pasted_text: str, pasted_text_name: str) -> list[dict]:
-    if input_mode == "Datei-Upload":
-        return [
-            {
-                "name": file.name,
-                "bytes": file.getvalue(),
-                "kind": "upload",
-            }
-            for file in (uploaded_files or [])
-        ]
+    if input_mode == "upload":
+        return [{"name": file.name, "bytes": file.getvalue(), "kind": "upload"} for file in (uploaded_files or [])]
 
     if not pasted_text.strip():
         return []
-    return [
-        {
-            "name": pasted_text_name.strip() or DEFAULT_PASTED_TEXT_NAME,
-            "bytes": pasted_text.encode("utf-8"),
-            "kind": "text",
-        }
-    ]
+    return [{"name": pasted_text_name.strip() or DEFAULT_PASTED_TEXT_NAME, "bytes": pasted_text.encode("utf-8"), "kind": "text"}]
 
 
 def main() -> None:
     render_header()
+    inject_layout_styles()
     banner_placeholder = st.empty()
     job_snapshot = get_current_job_snapshot()
     job_running = bool(job_snapshot and job_snapshot["status"] == "running")
-    transient_message: tuple[str, str] | None = None
+    transient_message: tuple[str, dict] | None = None
     left_col, right_col = st.columns([1, 1.2], gap="large")
 
+    available_languages = get_language_labels()
+
     with left_col:
-        render_column_heading("Input")
-        st.radio(
-            "Eingabemodus",
-            INPUT_MODES,
-            horizontal=True,
-            key="input_mode",
-            on_change=handle_input_mode_change,
-            disabled=job_running,
-        )
-
-        uploaded_files = []
-        glossary_file = None
-        input_mode = st.session_state.input_mode
-
-        if input_mode == "Datei-Upload":
-            uploaded_files = st.file_uploader(
-                "TXT-Dateien hochladen",
-                type=["txt"],
-                accept_multiple_files=True,
-                help="Mehrere strukturierte TXT-Dateien koennen gemeinsam verarbeitet werden.",
-                key=f"uploaded_files_{st.session_state.upload_widget_nonce}",
+        with st.container(key="input_panel"):
+            render_column_heading(tr("input"))
+            st.radio(
+                tr("input_mode"),
+                INPUT_MODES,
+                horizontal=True,
+                key="input_mode",
+                format_func=lambda mode: tr("mode_upload") if mode == "upload" else tr("mode_text"),
+                on_change=handle_input_mode_change,
                 disabled=job_running,
             )
-        else:
-            st.text_area(
-                "Text zum Uebersetzen",
-                key="pasted_text",
-                height=220,
-                help="Fuer schnelle Einzeltexte kannst du den Inhalt direkt hier einfuegen, statt eine TXT-Datei hochzuladen.",
-                disabled=job_running,
-            )
-            paste_save_cols = st.columns([1, 4])
-            with paste_save_cols[0]:
-                st.checkbox(
-                    "TXT",
-                    key="save_pasted_input",
-                    help="Wenn aktiviert, wird der eingefuegte Originaltext zusaetzlich als TXT im Session-Outputordner gespeichert.",
+
+            uploaded_files = []
+            glossary_file = None
+            input_mode = st.session_state.input_mode
+
+            if input_mode == "upload":
+                uploaded_files = st.file_uploader(
+                    tr("upload_label"),
+                    type=["txt"],
+                    accept_multiple_files=True,
+                    help=tr("upload_help"),
+                    key=f"uploaded_files_{st.session_state.upload_widget_nonce}",
                     disabled=job_running,
                 )
-            with paste_save_cols[1]:
-                st.text_input(
-                    "Speichern als TXT in Output im Projektordner?",
-                    key="pasted_text_name",
-                    help="Dateiname fuer den eingefuegten Text, falls du ihn zusammen mit den Uebersetzungen im Output-Ordner ablegen willst.",
+            else:
+                st.text_area(
+                    tr("text_label"),
+                    key="pasted_text",
+                    height=220,
+                    help=tr("text_help"),
+                    disabled=job_running,
+                )
+                paste_save_cols = st.columns([1, 4])
+                with paste_save_cols[0]:
+                    st.checkbox(
+                        tr("save_txt"),
+                        key="save_pasted_input",
+                        help=tr("save_txt_help"),
+                        disabled=job_running,
+                    )
+                with paste_save_cols[1]:
+                    st.text_input(
+                        tr("save_as_label"),
+                        key="pasted_text_name",
+                        help=tr("save_as_help"),
+                        disabled=job_running,
+                    )
+
+            language_cols = st.columns(2)
+            with language_cols[0]:
+                source_label = st.selectbox(
+                    tr("source_language"),
+                    available_languages,
+                    index=available_languages.index("Russisch"),
+                    format_func=localize_language_label,
+                    help=tr("source_help"),
+                    disabled=job_running,
+                )
+            with language_cols[1]:
+                target_label = st.selectbox(
+                    tr("target_language"),
+                    available_languages,
+                    index=available_languages.index("Deutsch"),
+                    format_func=localize_language_label,
+                    help=tr("target_help"),
+                    disabled=job_running,
+                )
+            with st.expander(tr("advanced_options")):
+                model_label = st.selectbox(
+                    tr("model"),
+                    list(MODEL_REGISTRY.keys()),
+                    index=0,
+                    help=tr("model_help"),
+                    disabled=job_running,
+                )
+                segmentation_mode = st.selectbox(
+                    tr("segmentation_mode"),
+                    SEGMENTATION_MODES,
+                    index=0,
+                    format_func=lambda mode: {
+                        "Auto": tr("segmentation_auto"),
+                        "Absatz": tr("segmentation_paragraph"),
+                        "Satz": tr("segmentation_sentence"),
+                    }[mode],
+                    help=tr("segmentation_help"),
+                    disabled=job_running,
+                )
+                max_segment_length = st.slider(
+                    tr("max_segment_length"),
+                    min_value=180,
+                    max_value=900,
+                    value=420,
+                    step=20,
+                    help=tr("max_segment_help"),
+                    disabled=job_running,
+                )
+                use_context_overlap = st.toggle(
+                    tr("context_toggle"),
+                    value=False,
+                    help=tr("context_help"),
+                    disabled=job_running,
+                )
+                glossary_file = st.file_uploader(
+                    tr("glossary"),
+                    type=["csv", "json"],
+                    accept_multiple_files=False,
+                    help=tr("glossary_help"),
                     disabled=job_running,
                 )
 
-        language_cols = st.columns(2)
-        with language_cols[0]:
-            source_label = st.selectbox(
-                "Quellsprache",
-                get_language_labels(),
-                index=get_language_labels().index("Russisch"),
-                help="Sprache des hochgeladenen Originaltexts. Sie wird auf den passenden NLLB-Sprachcode gemappt.",
-                disabled=job_running,
-            )
-        with language_cols[1]:
-            target_label = st.selectbox(
-                "Zielsprache",
-                get_language_labels(),
-                index=get_language_labels().index("Deutsch"),
-                help="Sprache, in die der Text lokal uebersetzt wird.",
-                disabled=job_running,
-            )
-        with st.expander("Erweiterte Uebersetzungsoptionen"):
-            model_label = st.selectbox(
-                "Modell",
-                list(MODEL_REGISTRY.keys()),
-                index=0,
-                help="Standard ist das lokal empfohlene 1.3B-NLLB-Modell. Die 3.3B-Option ist fuer spaetere Erweiterung vorbereitet.",
-                disabled=job_running,
-            )
-            segmentation_mode = st.selectbox(
-                "Segmentierungsmodus",
-                ["Auto", "Absatz", "Satz"],
-                index=0,
-                help="Auto arbeitet primaer absatzweise und faellt bei langen Bloecken auf Satzsegmente zurueck. Satz ist feiner, Absatz erhaelt mehr Struktur.",
-                disabled=job_running,
-            )
-            max_segment_length = st.slider(
-                "Maximale Segmentlaenge",
-                min_value=180,
-                max_value=900,
-                value=420,
-                step=20,
-                help="420 Zeichen ist ein sinnvoller Startwert fuer NLLB 1.3B: meist genug Kontext fuer saubere Saetze und noch klein genug fuer stabile, speicherschonende Inferenz. Fuer normale Sachtexte sind etwa 300 bis 500 Zeichen meist sinnvoll. Wenn das Modell Artefakte oder Auslassungen zeigt, eher kleiner waehlen; wenn zu hart getrennt wird, etwas groesser.",
-                disabled=job_running,
-            )
-            use_context_overlap = st.toggle(
-                "Vorheriges Segment als Kontext verwenden",
-                value=False,
-                help="Gedacht fuer bessere begriffliche Konsistenz zwischen aufeinanderfolgenden Segmenten, zum Beispiel bei Namen oder wiederholten Formulierungen. In der aktuellen stabilen Umsetzung wird diese Option bewusst sehr defensiv behandelt, weil direkte Prompt-Vermischung bei NLLB schnell Dopplungen, Auslassungen oder Artefakte erzeugen kann.",
-                disabled=job_running,
-            )
-            glossary_file = st.file_uploader(
-                "Optionales Glossar (CSV oder JSON)",
-                type=["csv", "json"],
-                accept_multiple_files=False,
-                help="Damit kannst du feste Terminologie vorgeben, etwa Firmennamen, Rechtsformen oder Fachbegriffe wie ООО -> GmbH. Das Glossar wird als einfache Quelle-Ziel-Ersetzung nach der Uebersetzung angewendet und ist besonders nuetzlich, wenn bestimmte Begriffe immer gleich erscheinen sollen.",
-                disabled=job_running,
-            )
+            button_cols = st.columns(2)
+            with button_cols[0]:
+                start_clicked = st.button(
+                    tr("start"),
+                    type="primary",
+                    use_container_width=True,
+                    disabled=job_running,
+                    help=tr("start_help"),
+                )
+            with button_cols[1]:
+                stop_clicked = st.button(
+                    tr("stop"),
+                    type="secondary",
+                    use_container_width=True,
+                    disabled=not job_running,
+                    help=tr("stop_help"),
+                )
 
-        button_cols = st.columns(2)
-        with button_cols[0]:
-            start_clicked = st.button(
-                "Uebersetzung starten",
-                type="primary",
-                use_container_width=True,
-                disabled=job_running,
-                help="Startet die Batch-Uebersetzung fuer den aktiven Eingabemodus.",
-            )
-        with button_cols[1]:
-            stop_clicked = st.button(
-                "Stop",
-                type="secondary",
-                use_container_width=True,
-                disabled=not job_running,
-                help="Bricht eine laufende Uebersetzung nach dem aktuell bearbeiteten Segment ab.",
-            )
-
-        st.caption(f"Beschleunigung: `{detect_device()}`. Modell bleibt fuer weitere Dateien geladen.")
+            st.caption(tr("device_caption", device=detect_device()))
 
     if stop_clicked:
         request_stop_current_job()
@@ -698,9 +930,9 @@ def main() -> None:
             pasted_text_name=st.session_state.pasted_text_name,
         )
         if not runtime_inputs:
-            transient_message = ("warning", "Bitte eine TXT-Datei hochladen oder Freitext eingeben.")
+            transient_message = ("warning", {"key": "warn_missing_input"})
         elif source_label == target_label:
-            transient_message = ("warning", "Quell- und Zielsprache muessen verschieden sein.")
+            transient_message = ("warning", {"key": "warn_same_language"})
         else:
             payload = {
                 "inputs": runtime_inputs,
@@ -722,13 +954,14 @@ def main() -> None:
         render_status_banner(job_snapshot, transient_message=transient_message)
 
     with right_col:
-        render_column_heading("Output")
-        st.caption("Aktuelle Uebersetzung")
-        segment_progress = st.progress(0)
-        st.caption("Gesamtjob")
-        file_progress = st.progress(0)
-        result_area = st.container()
-        render_results(job_snapshot, file_progress, segment_progress, result_area)
+        with st.container(key="output_panel"):
+            render_column_heading(tr("output"))
+            st.caption(tr("current_translation"))
+            segment_progress = st.progress(0)
+            st.caption(tr("overall_job"))
+            file_progress = st.progress(0)
+            result_area = st.container()
+            render_results(job_snapshot, file_progress, segment_progress, result_area)
 
     render_footer()
 

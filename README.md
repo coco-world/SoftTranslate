@@ -5,13 +5,18 @@ SoftTranslate is a local Streamlit application for translating structured TXT fi
 ## Features
 
 - Local browser UI with multi-file TXT upload
+- Optional free-text input mode
+- UI language toggle for German and English
 - Offline translation after the initial model download
 - Default support for `facebook/nllb-200-distilled-1.3B`
 - Modular structure for future model upgrades
-- Paragraph, sentence, and auto segmentation modes
+- Auto, paragraph, and sentence segmentation modes
+- Structured line preservation for TXT files like `12345; text`
 - Optional context overlap mode
-- Side-by-side preview, individual downloads, and ZIP export
-- Local logs, session output folders, and optional JSON metadata
+- Start/stop controls for long-running translations
+- Side-by-side preview, per-file downloads, and ZIP export
+- Job-based output folders inside `output/<session-id>/`
+- Local logs and generated outputs that stay on disk
 - Glossary hook for terminology control
 
 ## Requirements
@@ -47,6 +52,17 @@ streamlit run app.py
 
 Then open the local URL shown by Streamlit, typically `http://localhost:8501`.
 
+## Workflow
+
+1. Choose the UI language in the top-left corner.
+2. Select either file upload or free-text mode.
+3. Choose the source and target language.
+4. Optionally adjust segmentation, glossary, and context settings.
+5. Start the translation.
+6. Monitor the current-file and overall-job progress bars.
+7. Stop the run at any time if needed.
+8. Review results and download individual TXT files or a ZIP archive.
+
 ## Logo
 
 The app automatically loads a PNG logo from:
@@ -64,14 +80,6 @@ Recommended asset settings:
 - Recommended aspect ratio: square or slightly portrait
 
 If the file is present, it is rendered in the header. If not, the app falls back to the default text block.
-
-## Typical Workflow
-
-1. Upload one or more TXT files.
-2. Select the source and target language.
-3. Optionally adjust segmentation, segment length, glossary, and context settings.
-4. Start the translation.
-5. Review the preview and download individual files or a ZIP archive.
 
 ## Project Structure
 
@@ -103,12 +111,21 @@ softtranslate/
 - For very large files, reduce the segment length.
 - If MPS is unavailable, the app falls back to CPU automatically.
 - Empty or unreadable files are handled per file and do not stop the full batch.
+- If a translation is cancelled, partial results are kept when at least one segment has completed.
+- Switching between upload mode and free-text mode resets the stale UI state intentionally.
 
 ## Privacy
 
 - No cloud API is used for the actual translation step.
 - Only the initial model download requires a network connection.
 - Logs and generated outputs stay inside the local project directory.
+- The repository is configured to ignore local outputs, logs, caches, and virtual environments.
+
+## Public Repo Safety
+
+- No passwords, API keys, or private tokens are required by the current app code.
+- The project currently stores no user identity paths or local machine paths in the tracked README.
+- Before publishing results, still review generated TXT files in `output/` because they may contain user content even though that folder is ignored by Git.
 
 ## Extension Points
 
