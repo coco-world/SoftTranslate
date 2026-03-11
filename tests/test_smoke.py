@@ -1,6 +1,8 @@
 import unittest
+from unittest.mock import patch
 
 from core.io_utils import build_output_filename
+from core.model_manager import ModelLoadError, load_model
 from core.reassembler import reassemble_segments
 from core.segmenter import segment_text
 from core.translator import TranslationCancelledError, TranslationRequest, Translator, split_structured_prefix
@@ -75,6 +77,32 @@ class SmokeTests(unittest.TestCase):
 
         self.assertEqual(context.exception.translated_segment_count, 0)
         self.assertEqual(context.exception.partial_text, "")
+
+    def test_load_model_prefers_local_cache_without_network(self) -> None:
+        fake_model = type(
+            "FakeModel",
+            (),
+            {"to": lambda self, _device: self, "eval": lambda self: self},
+        )()
+
+        load_model.cache_clear()
+        with patch("core.model_manager.detect_device", return_value="cpu"):
+            with patch("core.model_manager._load_tokenizer", return_value=object()) as tokenizer_loader:
+                with patch("core.model_manager._load_seq2seq_model", return_value=fake_model) as model_loader:
+                    loaded = load_model("facebook/nllb-200-distilled-1.3B")
+
+        self.assertEqual(loaded.device, "cpu")
+        tokenizer_loader.assert_called_once_with("facebook/nllb-200-distilled-1.3B", local_files_only=True)
+        model_loader.assert_called_once_with("facebook/nllb-200-distilled-1.3B", local_files_only=True)
+
+    def test_load_model_raises_clear_error_in_offline_mode_without_cache(self) -> None:
+        load_model.cache_clear()
+        with patch.dict("os.environ", {"HF_HUB_OFFLINE": "1"}, clear=False):
+            with patch("core.model_manager._load_tokenizer", side_effect=OSError("cache miss")):
+                with self.assertRaises(ModelLoadError) as context:
+                    load_model("facebook/nllb-200-distilled-1.3B")
+
+        self.assertIn("lokalen Hugging-Face-Cache", str(context.exception))
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -34,6 +35,10 @@ class LoadedModel:
     device: str
 
 
+class ModelLoadError(RuntimeError):
+    """Raised when a model cannot be loaded from cache or downloaded."""
+
+
 def detect_device() -> str:
     if torch.backends.mps.is_available():
         return "mps"
@@ -42,12 +47,40 @@ def detect_device() -> str:
     return "cpu"
 
 
+def _is_offline_mode_enabled() -> bool:
+    return os.environ.get("TRANSFORMERS_OFFLINE") == "1" or os.environ.get("HF_HUB_OFFLINE") == "1"
+
+
+def _load_tokenizer(model_name: str, *, local_files_only: bool) -> AutoTokenizer:
+    return AutoTokenizer.from_pretrained(model_name, use_fast=False, local_files_only=local_files_only)
+
+
+def _load_seq2seq_model(model_name: str, *, local_files_only: bool) -> AutoModelForSeq2SeqLM:
+    return AutoModelForSeq2SeqLM.from_pretrained(model_name, local_files_only=local_files_only)
+
+
 @lru_cache(maxsize=2)
 def load_model(model_name: str) -> LoadedModel:
     device = detect_device()
     LOGGER.info("Loading translation model %s on %s", model_name, device)
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+    try:
+        tokenizer = _load_tokenizer(model_name, local_files_only=True)
+        model = _load_seq2seq_model(model_name, local_files_only=True)
+        LOGGER.info("Loaded translation model %s from local Hugging Face cache", model_name)
+    except Exception as local_error:
+        if _is_offline_mode_enabled():
+            raise ModelLoadError(
+                f"Modell {model_name} wurde nicht im lokalen Hugging-Face-Cache gefunden. "
+                "Offline-Modus ist aktiv; bitte das Modell einmal mit Internetverbindung herunterladen."
+            ) from local_error
+        LOGGER.info("Local cache miss for %s, falling back to Hugging Face download", model_name)
+        try:
+            tokenizer = _load_tokenizer(model_name, local_files_only=False)
+            model = _load_seq2seq_model(model_name, local_files_only=False)
+        except Exception as remote_error:
+            raise ModelLoadError(
+                f"Modell {model_name} konnte weder lokal geladen noch von Hugging Face heruntergeladen werden."
+            ) from remote_error
     model.to(device)
     model.eval()
     return LoadedModel(model_name=model_name, tokenizer=tokenizer, model=model, device=device)
