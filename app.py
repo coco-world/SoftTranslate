@@ -788,15 +788,20 @@ def main() -> None:
     with left_col:
         with st.container(key="input_panel"):
             render_column_heading(tr("input"))
-            st.radio(
-                tr("input_mode"),
-                INPUT_MODES,
-                horizontal=True,
-                key="input_mode",
-                format_func=lambda mode: tr("mode_upload") if mode == "upload" else tr("mode_text"),
-                on_change=handle_input_mode_change,
-                disabled=job_running,
-            )
+            input_mode_cols = st.columns([1.1, 2.2], gap="small")
+            with input_mode_cols[0]:
+                st.markdown(f"**{tr('input_mode')}**")
+            with input_mode_cols[1]:
+                st.radio(
+                    tr("input_mode"),
+                    INPUT_MODES,
+                    horizontal=True,
+                    key="input_mode",
+                    format_func=lambda mode: tr("mode_upload") if mode == "upload" else tr("mode_text"),
+                    on_change=handle_input_mode_change,
+                    disabled=job_running,
+                    label_visibility="collapsed",
+                )
 
             uploaded_files = []
             glossary_file = None
