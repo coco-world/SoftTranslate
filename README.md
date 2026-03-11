@@ -1,5 +1,9 @@
 # SoftTranslate
 
+<p align="center">
+  <img src="assets/tease.png" width="900">
+</p>
+
 SoftTranslate is a local Streamlit application for translating structured TXT files with Meta NLLB models.
 
 ## Features
